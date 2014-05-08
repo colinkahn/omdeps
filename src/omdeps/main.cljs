@@ -1,6 +1,7 @@
 (ns omdeps.main
   (:require-macros [cljs.core.async.macros :refer [go alt!]])
-  (:require [cljs.core.async :refer  [>! put! chan]]
+  (:require [cljs.core.async :refer [>! put! chan]]
+            [clojure.set]
             [om.core :as om :include-macros true]
             [om.dom :as dom :include-macros true])
   (:import  [goog.ui IdGenerator]))
@@ -8,38 +9,80 @@
 (defn guid []
   (.getNextUniqueId (.getInstance IdGenerator)))
 
-(def app-state (atom {:editing nil
-                      :query ""
-                      :open-deps []
-                      :library {:name "my-library"
-                                :version "1.0.0"
-                                :id (guid)
-                                :deps [{:name "backbone" 
-                                        :version "1.0.0" 
-                                        :id (guid)
-                                        :deps [{:name "underscore"
-                                                :version "1.0.0"
-                                                :id (guid)}]}
-                                       {:name "angular" 
-                                        :version "2.0.0" 
-                                        :id (guid)}]}}))
+(def app-state
+  (atom {:editing nil
+         :query ""
+         :open-deps []
+         :library [
+            {:name "my-library"
+             :root true
+             :id "1"
+             :version "1.0.0"
+             :deps ["2" "4"]}
+            {:name "backbone"
+             :id "2"
+             :version "1.0.0"
+             :deps ["3"]}
+            {:name "underscore"
+             :id "3"
+             :version "1.0.0" }
+            {:name "angular"
+             :id "4"
+             :version "2.0.0"}]}))
 
 ;; HELPERS
 
 (defn has-string [s c]
-  (not (= (.indexOf s c) -1)))
+  (if s
+    (not (= (.indexOf s c) -1))
+    false))
 
 (defn is-open [item app]
   (some #{(:id item)} (:open-deps app)))
 
+(defn find-all [items props]
+  ((clojure.set/index items  (keys props)) props))
+
+(defn find-one [items props]
+  (-> items
+       (find-all props)
+       first))
+
+(defn get-deps [item app]
+  (let [items (:library app)]
+    (reduce
+      (fn [m id]
+        (let [dep (find-one items {:id id})]
+          (if dep
+            (conj m dep)
+            m)))
+      [] (:deps item))))
+
+(defn remove-item [items id]
+  (filter #(not= (:id %) id) items))
+
+(defn remove-in-deps [items id]
+  (map (fn [item]
+         (assoc item :deps
+           (remove #{id} (:deps item))))
+       items))
+
+(defn trim-tree [oitems odeps]
+  (loop [deps odeps
+         items oitems]
+	(let [id (first deps)
+        item (find-one items {:id id})]
+      (if (not id)
+        items
+        (recur (remove #{id} deps)
+               (-> items
+                   (trim-tree (:deps item))
+                   (remove-in-deps id)
+                   (remove-item id)))))))
+
 (defn prep-item [item app]
   (-> item
     (conj {:open (is-open item app)})))
-
-(defn vec-remove
-  "remove elem in coll"
-  [pos coll]
-  (vec (concat (subvec coll 0 pos) (subvec coll (inc pos)))))
 
 (defn prevent-default [cb]
   (fn [event] (.preventDefault event) (cb)))
@@ -55,39 +98,51 @@
   (let [query (.. e -target -value)]
     (om/transact! app :query (fn [] query))))
 
-(defn handle-delete [app item]
-  (om/transact! app (butlast (.-path item))
+(defn handle-delete [app item-id]
+  (om/transact! app :library
     (fn [deps]
-      (vec-remove (last (.-path item)) deps))))
+      (trim-tree deps [item-id]))))
 
 (defn handle-input-field [k e owner]
   (om/set-state! owner k (.. e -target -value)))
 
 (defn handle-new [app owner]
   (let [n (om/get-state owner :new-name)
-        v (om/get-state owner :new-version)]
-    (om/transact! app (conj (:editing @app) :deps)
+        v (om/get-state owner :new-version)
+        id (guid)]
+    (om/transact! app :library
       (fn [deps]
-        (vec  (conj deps {:name n :version v :id (guid)}))))))
+        (conj
+          (map
+            (fn [item]
+              (if (= (:id item) (:editing app))
+                (assoc item :deps (conj (:deps item) id))
+                item)) deps) {:name n :version v :id id})))))
 
 (defn handle-update-item [app owner]
   (let [n (om/get-state owner :name)
         v (om/get-state owner :version)]
-    (om/transact! app (:editing @app)
-      (fn [item] (assoc item :name n :version v)))))
+    (om/transact! app :library
+      (fn [deps]
+        (map
+          (fn [item]
+            (if (= (:id item) (:editing app))
+              (assoc item :name n :version v)
+              item))
+          deps)))))
 
-(defn handle-item-edit [e app item]
-  (om/transact! app :editing #(.-path item)))
+(defn handle-item-edit [e app item-id]
+  (om/transact! app #(assoc % :editing item-id)))
 
-(defn handle-item-toggle-open [e app item]
+(defn handle-item-toggle-open [e app item-id]
   (om/transact! app [:open-deps]
     (fn [items]
-      (toggle-in-vec (:id @item) items))))
+      (toggle-in-vec item-id items))))
 
-(defn handle-event [app [type item :as e]]
+(defn handle-event [app [type item-id :as e]]
   (case type
-    :edit        (handle-item-edit e app item)
-    :toggle-open (handle-item-toggle-open e app item)))
+    :edit        (handle-item-edit e app item-id)
+    :toggle-open (handle-item-toggle-open e app item-id)))
 
 ;; COMPONENTS
 
@@ -98,17 +153,19 @@
       true)
     om/IRenderState
     (render-state [_ {:keys [comm app] :as state}]
-      (let [item-deps (:deps item)
+      (let [item-deps (get-deps item app)
             item-deps-count (count item-deps)
             item-open (:open item)
-            item-open-deps (:open-deps item)]
-        (dom/li nil 
+            item-open-deps (:open-deps item)
+            item-id (:id item)]
+        (.log js/console (pr-str item-deps))
+        (dom/li nil
           (when (not= item-deps-count 0)
-            (dom/a #js {:onClick (prevent-default #(put! comm [:toggle-open item]))
+            (dom/a #js {:onClick (prevent-default #(put! comm [:toggle-open item-id]))
                         :href "#"
                         :className "toggle"}
                       (if-not (nil? item-open) "-" "+")))
-          (dom/a #js {:onClick (prevent-default #(put! comm [:edit item]))
+          (dom/a #js {:onClick (prevent-default #(put! comm [:edit item-id]))
                       :href "#"} (:name item))
           (str " v" (:version item))
           (when (and (not (nil? item-open)) (not= item-deps-count 0))
@@ -127,19 +184,18 @@
        :id (:id item)
        :new-name ""
        :new-version ""})
-    ; Change this to IWillRecieveProps when that exists
-    om/IDidUpdate
-    (did-update [_ _ prev-state _]
-      (when (not= (:id prev-state) (:id item))
-        (om/set-state! owner :id (:id item))
-        (om/set-state! owner :name (:name item))
-        (om/set-state! owner :version (:version item))
-        (om/set-state! owner :new-name "")
-        (om/set-state! owner :new-version "")))
+    om/IWillReceiveProps
+    (will-receive-props [_ next-state]
+      (om/set-state! owner :id (:id next-state))
+      (om/set-state! owner :name (:name next-state))
+      (om/set-state! owner :version (:version next-state))
+      (om/set-state! owner :new-name "")
+      (om/set-state! owner :new-version ""))
     om/IRenderState
     (render-state [_ {:keys [comm app] :as state}]
-      (let [fdps (filter #(has-string (:name %) (:query app)) (:deps item))]
-        (dom/div nil 
+      (let [deps (get-deps item app)
+            fdps (filter #(has-string (:name %) (:query app)) deps)]
+        (dom/div nil
           (dom/form nil
             (dom/h2 nil "Editing")
             (dom/fieldset nil
@@ -158,11 +214,13 @@
               (dom/label nil "Filter "
                 (dom/input #js {:onKeyUp #(handle-filter % app)}))
               (into-array
-                (map (fn [item] (dom/li nil
-                        (:name item)
-                        (dom/button #js {:onClick (prevent-default
-                                                    #(handle-delete app item))}
-                                    "Delete")))
+                (map (fn [item]
+                       (let [item-id (:id item)]
+                        (dom/li nil
+                          (:name item)
+                          (dom/button #js {:onClick (prevent-default
+                                                      #(handle-delete app item-id))}
+                                      "Delete"))))
                       fdps)))
             (dom/fieldset nil
               (dom/legend nil "Add Dependency")
@@ -186,16 +244,16 @@
               (handle-event app (<! comm))))))
     om/IRenderState
     (render-state [_ {:keys [comm] :as state}]
-      (let [edit-path (:editing app)]
+      (let [edit-id (:editing app)]
         (dom/div nil
           (dom/code #js {:className "state"} (pr-str app))
           (dom/div #js {:className "recur-list"}
-            (om/build recur-list (:library app)
+            (om/build recur-list (find-one (:library app) {:root true})
               {:state {:comm comm :app app}
                :fn #(prep-item % app)}))
           (if (:editing app)
             (dom/div #js {:className "edit"}
-              (om/build item-edit (get-in app edit-path)
+              (om/build item-edit (find-one (:library app) {:id edit-id})
                         {:state {:comm comm :app app}}))))))))
 
 (om/root projects-app app-state {:target js/document.body})
