@@ -158,7 +158,6 @@
             item-open (:open item)
             item-open-deps (:open-deps item)
             item-id (:id item)]
-        (.log js/console (pr-str item-deps))
         (dom/li nil
           (when (not= item-deps-count 0)
             (dom/a #js {:onClick (prevent-default #(put! comm [:toggle-open item-id]))
