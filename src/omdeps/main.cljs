@@ -25,7 +25,7 @@
              :deps ["3"]}
             {:name "underscore"
              :id "3"
-             :version "1.0.0" }
+             :version "1.0.0"}
             {:name "angular"
              :id "4"
              :version "2.0.0"}]}))
@@ -40,10 +40,17 @@
 (defn is-open [item app]
   (some #{(:id item)} (:open-deps app)))
 
-(defn find-all [items props]
+(defn find-all
+  "Finds every item item in items that matches the key values
+   in props"
+  [items props]
   ((clojure.set/index items  (keys props)) props))
 
-(defn find-one [items props]
+
+(defn find-one
+  "Finds the first item in prop that matches each key value
+   in props"
+  [items props]
   (-> items
        (find-all props)
        first))
@@ -59,7 +66,7 @@
       [] (:deps item))))
 
 (defn remove-item [items id]
-  (filter #(not= (:id %) id) items))
+  (remove #(= (:id %) id) items))
 
 (defn remove-in-deps [items id]
   (map (fn [item]
@@ -87,7 +94,10 @@
 (defn prevent-default [cb]
   (fn [event] (.preventDefault event) (cb)))
 
-(defn toggle-in-vec [v l]
+(defn toggle-in-vec
+  "Finds the value v in vector l and removes if present or
+   adds if it is not."
+  [v l]
   (if (some #{v} l)
     (remove #(= v %) l)
     (conj l v)))
@@ -148,6 +158,9 @@
 
 (defn recur-list [item owner]
   (reify
+    om/IDisplayName
+    (display-name [_]
+      (str "Recur List: " (:name item)))
     om/IShouldUpdate
     (should-update [_ _ _]
       true)
@@ -176,6 +189,8 @@
 
 (defn item-edit [item owner]
   (reify
+    om/IDisplayName
+    (display-name [_] "Item Edit")
     om/IInitState
     (init-state [_]
       {:name (:name item)
@@ -235,6 +250,8 @@
 
 (defn projects-app [app owner]
   (reify
+    om/IDisplayName
+    (display-name [_] "App")
     om/IWillMount
     (will-mount [_]
       (let [comm (chan)]
